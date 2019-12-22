@@ -1,0 +1,281 @@
+---
+title: "Untitled"
+author: "Jiayu Zhang"
+date: "12/14/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## part.1 prerequisites:
+
+```{r}
+library(dplyr)
+library(knitr)
+library(ggplot2)
+library(magrittr)
+library(gridExtra)
+library(wordcloud2)
+library(kableExtra)
+library(tidytext)
+```
+
+use the full dataset:
+```{r}
+# this is the output from data_cleaning.py
+good_recipe_id = t(read.table("../output.txt", header = F, sep = ","))
+colnames(good_recipe_id) = "recipe_id"
+good_recipe_id = data.frame(good_recipe_id)
+#this is the input from kaggle.com (RAW_interaction.csv)
+review_orig = read.csv("/Users/Sherry_Se7en/Downloads/food-com-recipes-and-user-interactions/RAW_interactions.csv", 
+                       stringsAsFactors = F)
+review_full = review_orig %>% select(user_id, recipe_id, rating, review)
+select_good_recipe = inner_join(review_full, good_recipe_id, by = "recipe_id")
+```
+
+## Data Conditioning
+### Basic Cleaning:
+```{r}
+# to expand contractions in an English source and remove special characters and numbers
+fix_contractions = function(doc){
+  doc = gsub("won't", "will not", doc)
+  doc = gsub("can't", "can not", doc)
+  doc = gsub("n't", " not", doc)
+  doc = gsub("'ll", " will", doc)
+  doc = gsub("'re", " are", doc)
+  doc = gsub("'ve", " have", doc)
+  doc = gsub("'m", " am", doc)
+  doc = gsub("'d", " would", doc)
+  doc = gsub("'s", "", doc)
+  doc = gsub("[^a-zA-Z ]", " ", doc)
+  return(doc)
+}
+```
+
+```{r}
+#use the full datasets
+select_good_recipe$review = sapply(select_good_recipe$review, fix_contractions)
+# convert everthing to lower case
+select_good_recipe$review = sapply(select_good_recipe$review, tolower)
+```
+
+not sure if introduce this stemming part: (not very reliable)
+```{r}
+# word stemming and completion
+# this is an example
+library(tm)
+dfcorpus = VCorpus(VectorSource(review_100$review[47]))
+dfcorpus_copy = dfcorpus
+x.temp = tm_map(dfcorpus, stemDocument, language = "english") 
+x = tm_map(x.temp, stemCompletion, dictionary = dfcorpus_copy)
+dfcorpus[[1]]$content #before
+x #after
+```
+From above, I saw that the completion did not proceed correctly, so I gave up on stemming since it left with imcomplete words.
+
+***
+
+## Text Mining:
+decipher the ambiguities in written language by tokenization, clustering, extracting entity and word relationships, and using algorithms to identify themes and quantify subjective information.  
+
+**begin** breaking down the concept of lexical complexity.
+* word frequency
+* word length
+* lexical diversity: number of unique words used in a text 
+* lexical density: the number of unique words divided by the total number of words (word repetition)
+
+**tokenization**
+
+```{r}
+# filter
+# break the text into individual tokens and transform it to a tify data stucture
+
+undesirable_words = c("add", "added", "adding", "ate", "are", "were", "cook", "cooked", "cooking",
+                      "recipe", "recipes", "posting", "www.topsecretrecipes.com", "zwt4",
+                      "tag", "www.uga.edu", "mmm", "mmmm", "mmmmm", "mmmmmm")
+
+# also remove the stops words (too common) and undesirable words which may not add any meaning to our results
+
+review_full_filtered = select_good_recipe %>% 
+  unnest_tokens(word, review) %>%
+  anti_join(stop_words) %>%
+  distinct() %>%
+  filter(!word %in% undesirable_words) %>%
+  filter(nchar(word) > 2)
+```
+```{r}
+# Here's a snapshot: (selected word "fresh")
+
+review_100_filtered %>% 
+  filter(word == "fresh") %>%
+  select(word, user_id, recipe_id, rating) %>%
+  arrange() %>%
+  top_n(10,recipe_id) %>%
+  #mutate(song = color_tile("lightblue","lightblue")(song)) %>%
+  #mutate(word = color_tile("lightgreen","lightgreen")(word)) %>%
+  kable("html", escape = FALSE, align = "c", caption = "Tokenized Format Example") %>%
+  kable_styling(bootstrap_options = 
+                  c("striped", "condensed", "bordered"), 
+                  full_width = FALSE)
+
+```
+
+**word frequency**
+```{r}
+# use the full text to count word frequency
+
+full_word_count = select_good_recipe %>%
+  unnest_tokens(word, review) %>%
+  group_by(recipe_id, rating) %>%
+  summarise(num_words = n()) %>%
+  arrange(desc(num_words)) 
+
+# first see the recipes with highest word count (in review)
+
+full_word_count[1:10,] %>%
+  ungroup(num_words, recipe_id) %>%
+  kable("html", escape = FALSE, align = "c", caption = "Recipes With Highest Word Count") %>%
+  kable_styling(bootstrap_options = 
+                  c("striped", "condensed", "bordered"), 
+                  full_width = FALSE)
+```
+```{r}
+# take a look at the highest counts use ggplot based on rating
+
+full_word_count %>%
+  ggplot() +
+    geom_histogram(aes(x = num_words, fill = factor(rating))) +
+    ylab("Recipe Count") + 
+    xlab("Word Count per Recipe") +
+    ggtitle("Word Count Distribution") +
+    theme(plot.title = element_text(hjust = 0.5),
+          legend.title = element_blank(),
+          panel.grid.minor.y = element_blank())
+```
+**top words**
+```{r}
+# extract the most frequently used words in the full set of recipe reviews
+
+review_full_filtered %>%
+  count(word, sort = TRUE) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot() +
+    geom_col(aes(word, n), fill = "#CC79A7") +
+    theme(legend.position = "none", 
+          plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_blank()) +
+    xlab("") + 
+    ylab("Recipe Count") +
+    ggtitle("Most Frequently Used Words in Food.com Recipe reviews") +
+    coord_flip()
+```
+**word clouds**
+```{r}
+# make a word cloud to visualize the top words:
+
+review_full_counts = review_full_filtered %>%
+  count(word, sort = TRUE) 
+
+wordcloud2(review_full_counts[1:100, ], size = .5)
+```
+**popular words**  
+
+```{r}
+# separate all popular words by rating 
+
+popular_words = review_full_filtered %>% 
+  group_by(rating) %>%
+  count(word, rating, sort = TRUE) %>%
+  slice(seq_len(8)) %>%
+  ungroup() %>%
+  arrange(rating,n) %>%
+  mutate(row = row_number()) 
+
+popular_words %>%
+  ggplot(aes(row, n, fill = factor(rating))) +
+    geom_col(show.legend = NULL) +
+    labs(x = NULL, y = "Recipe Count") +
+    ggtitle("Popular Words by Rating") + 
+    #theme_lyrics() +  
+    facet_wrap(~rating, scales = "free") +
+    scale_x_continuous(  # This handles replacement of row 
+      breaks = popular_words$row, # notice need to reuse data frame
+      labels = popular_words$word) +
+    coord_flip()
+```
+## TF-IDF
+**term frequency (TF)**: number of times a term occurs in a document  
+**document frequency (DF)**:number of documents that contain each word  
+**inverse document frequency (IDF)**  
+**TF-IDF** = TF*IDF  
+```{r}
+# use TF-IDF to examng the most important words per rating
+# calculate and bind the TF and IDF and TF-IDF to tidy text
+
+review_full_tfidf = review_full_filtered %>% 
+  count(rating, word, sort = TRUE) %>%
+  ungroup() %>%
+  bind_tf_idf(word, rating, n)
+
+#head(review_100_tfidf)
+
+```
+```{r}
+# separate the top TF-IDF words by rating
+
+top_popular_tfidf_words = review_full_tfidf %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) %>%
+  group_by(rating) %>% 
+  slice(seq_len(8)) %>%
+  ungroup() %>%
+  arrange(rating, tf_idf) %>%
+  mutate(row = row_number())
+
+top_popular_tfidf_words %>%
+  ggplot(aes(x = row, tf_idf, 
+             fill = factor(rating))) +
+    geom_col(show.legend = NULL) +
+    labs(x = NULL, y = "TF-IDF") + 
+    ggtitle("Important Words using TF-IDF by rating") +
+    #theme_lyrics() +  
+    facet_wrap(~rating, ncol = 2, scales = "free") +
+    scale_x_continuous(  # This handles replacement of row 
+      breaks = top_popular_tfidf_words$row, # notice need to reuse data frame
+      labels = top_popular_tfidf_words$word) +
+    coord_flip()
+```
+
+```{r}
+# make a word cloud of the top TF-IDF words
+
+tfidf_wc = review_full_tfidf %>%
+  arrange(desc(tf_idf)) %>%
+  select(word, tf_idf)
+
+wordcloud2(tfidf_wc[1:100, ], size = .5)
+```
+
+**output** are 2 variables: top100 word count and top100 tfidf
+```{r}
+wc_words = review_full_counts[1:100, ]
+review_full_wc = inner_join(review_full_filtered, wc_words, by = "word")[,1:4]
+tfidf_words = tfidf_wc[1:100, ]
+review_full_tfidf1 = inner_join(review_full_filtered, tfidf_words, by = "word")[,1:4]
+
+```
+```{r}
+write.table(review_full_wc, file = "../review_full_wc.csv", sep = ",", col.names = colnames(review_full_wc), row.names = F, qmethod = "double")
+
+write.table(review_full_tfidf1, file = "../review_full_tfidf.csv", sep = ",", col.names = colnames(review_full_tfidf1), row.names = F, qmethod = "double")
+
+write.table(wc_words, file = "../wc_words.csv", sep = ",", col.names = colnames(wc_words), row.names = F, qmethod = "double")
+
+write.table(tfidf_words, file = "../tfidf_words.csv", sep = ",", col.names = colnames(tfidf_words), row.names = F, qmethod = "double")
+
+```
+
